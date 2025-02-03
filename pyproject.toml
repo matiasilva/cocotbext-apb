@@ -1,0 +1,7 @@
+[project]
+name = "cocotbext-apb"
+version = "0.1.0"
+description = "AMBA APB cocotb extension, 2.0 ready"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["cocotb-bus>=0.2.1"]
