@@ -6,6 +6,7 @@ from cocotb.triggers import RisingEdge
 from enum import Enum, auto
 from typing import NamedTuple
 from functools import cached_property
+from dataclasses import dataclass, field
 import logging
 
 
@@ -17,35 +18,49 @@ class APBPhase(Enum):
 
 class APBWriteTxFrame(NamedTuple):
     paddr: LogicArray
-    pwrite: Logic
-    psel: Logic
-    penable: Logic
     pwdata: LogicArray
-
-
-class APBWriteRxFrame(NamedTuple):
-    pready: Logic
+    pstrb: LogicArray = LogicArray(0b1111, 4)
+    pwrite: Logic = Logic(True)
+    psel: Logic = Logic(True)
+    penable: Logic = Logic(False)
 
 
 class APBReadTxFrame(NamedTuple):
     paddr: LogicArray
-    pwrite: Logic
-    psel: Logic
-    penable: Logic
-    prdata: LogicArray
+    pwrite: Logic = Logic(False)
+    psel: Logic = Logic(True)
+    penable: Logic = Logic(False)
+    pstrb: LogicArray = LogicArray(0b0000, 4)
 
 
-class APBReadRxFrame(NamedTuple):
-    paddr: LogicArray
-    pwrite: Logic
-    psel: Logic
-    penable: Logic
-    prdata: LogicArray
+class APBIdleFrame(NamedTuple):
+    psel: Logic = Logic(False)
+    penable: Logic = Logic(False)
+    pstrb: LogicArray = LogicArray(0b0000, 4)
 
 
-class APBTransaction(NamedTuple):
+@dataclass
+class APBTransaction:
     address: int
     data: int | None = None
+    is_read: bool = field(init=False)
+    error: bool = False
+    read_data: int = 0
+
+    def __post_init__(self):
+        self.is_read = self.data is None
+
+    def as_frame(self, bus: "APBBus") -> APBReadTxFrame | APBWriteTxFrame:
+        """Convert the transaction into a valid read/write frame"""
+        if self.is_read:
+            return APBReadTxFrame(
+                LogicArray.from_unsigned(self.address, len(bus.paddr))
+            )
+        else:
+            return APBWriteTxFrame(
+                LogicArray.from_unsigned(self.address, len(bus.paddr)),
+                LogicArray(self.data, len(bus.pwdata)),
+            )
 
 
 class APBBus(Bus):
@@ -75,7 +90,8 @@ class APBRequesterDriver:
     """
     Class for an APB requester, formerly known as a master.
 
-    Note: we do not inherit from cocotb-bus' `BusDriver` as it does not use an async queue.
+    Note: we do not inherit from cocotb-bus' `BusDriver` as it does not use an async queue
+    and has some legacy code from <2.0. To be reevaluated..
     """
 
     def __init__(self, entity: SimHandleBase, name: str, clock: LogicObject, **kwargs):
@@ -95,38 +111,50 @@ class APBRequesterDriver:
 
         self.__name__ = f"{entity._name}.{type(self).__qualname__} {name}"
 
-        # TODO: set initial values for signals
+        self._bus.drive(APBIdleFrame())
 
     @cached_property
     def log(self) -> logging.Logger:
         """Access the logger for this driver, cached as creating a logger is expensive"""
         return logging.getLogger(f"cocotb.{self.__name__}")
 
-    async def _driver_send(self, transaction: APBTransaction):
+    async def _driver_send(self, transaction: APBTransaction) -> APBTransaction:
         """
         Initiate a transaction on the APB bus using parameters from `frame`.
 
         Low-level implementation of the send method.
+
+        Returns:
+            None if the transaction was a write, else the read value if it was a
+            read transaction.
         """
-        LogicArray.from_unsigned(0xA, 4)
 
         self._state = APBPhase.SETUP
-        if transaction.data is not None:
-            setup_frame = APBWriteTxFrame(
-                LogicArray.from_unsigned(transaction.address, self._address_bus_size),
-                Logic(True),
-                Logic(True),
-                Logic(False),
-                LogicArray(transaction.data, self._data_bus_size),
-            )
-            self._bus.drive(setup_frame)
+        setup_frame = transaction.as_frame(self._bus)
+
+        self._bus.drive(setup_frame)
+        await RisingEdge(self._clock)
+
+        self._state = APBPhase.ACCESS
+        access_frame = setup_frame._replace(penable=Logic(True))
+        self._bus.drive(access_frame)
+        await RisingEdge(self._clock)
+
+        # stall for any wait states
+        while not self._bus.pready.value:
             await RisingEdge(self._clock)
-            self._state = APBPhase.ACCESS
-            access_frame = setup_frame._replace(penable=Logic(True))
-            self._bus.drive(access_frame)
-            while not self._bus.pready.value:
-                await RisingEdge(self._clock)
-            self.log.info("APB write transaction OK")
+
+        self.log.info(
+            f"APB {'read' if transaction.is_read else 'write'} transaction OK"
+        )
+        # cleanup
+        self._bus.drive(APBIdleFrame())
+
+        transaction.error = bool(self._bus.pslverr.value)
+        if transaction.is_read:
+            transaction.read_data = self._bus.prdata.value.to_unsigned()
+
+        return transaction
 
 
 class APBCollectorDriver:

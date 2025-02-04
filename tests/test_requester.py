@@ -2,7 +2,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import Timer
+from cocotb.triggers import Timer, ReadOnly
 from cocotb_tools.runner import Icarus
 
 
@@ -16,12 +16,17 @@ async def smoke_test(dut):
     driver = APBRequesterDriver(dut, "", dut.pclk)
 
     dut.reset_n.value = 0
-    await Timer(4, units="ns")
+    await Timer(3, units="ns")
     dut.reset_n.value = 1
     dut._log.debug("reset complete")
 
-    tx = APBTransaction(0x4, 0x8)
+    dut.enable.value = 1
+    tx = APBTransaction(0x10, 0x8)
     await driver._driver_send(tx)
+
+    tx = APBTransaction(0x10)
+    await driver._driver_send(tx)
+    assert tx.read_data == 0x8
 
 
 def test_requester_runner():
