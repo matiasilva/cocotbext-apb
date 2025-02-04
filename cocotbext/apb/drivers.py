@@ -144,13 +144,16 @@ class APBRequesterDriver:
         while not self._bus.pready.value:
             await RisingEdge(self._clock)
 
+        # cleanup
         self.log.info(
             f"APB {'read' if transaction.is_read else 'write'} transaction OK"
         )
-        # cleanup
         self._bus.drive(APBIdleFrame())
+        self._state = APBPhase.IDLE
 
         transaction.error = bool(self._bus.pslverr.value)
+        if transaction.error:
+            self.log.error(f"Transaction {transaction} got error!")
         if transaction.is_read:
             transaction.read_data = self._bus.prdata.value.to_unsigned()
 
