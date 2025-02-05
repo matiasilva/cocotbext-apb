@@ -159,6 +159,20 @@ class APBRequesterDriver:
 
         return transaction
 
+    async def read(self, address: int) -> APBTransaction:
+        tx = APBTransaction(address)
+        await self._driver_send(tx)
+        if tx.error:
+            assert False, "APB read error"
+        return tx
+
+    async def write(self, address: int, data: int) -> APBTransaction:
+        tx = APBTransaction(address, data)
+        await self._driver_send(tx)
+        if tx.error:
+            assert False, "APB write error"
+        return tx
+
 
 class APBCollectorDriver:
     pass
